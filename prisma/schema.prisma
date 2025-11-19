@@ -1,0 +1,590 @@
+// DiverEdu - Prisma Schema
+// Base de datos relacional para usuarios, metadata de OAs y el Grafo de Conocimiento
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// MODELOS DE USUARIO Y AUTENTICACIÓN
+// ============================================================================
+
+enum UserRole {
+  STUDENT
+  EDUCATOR
+  ADMIN
+}
+
+enum UserTier {
+  FREE
+  PREMIUM
+  ENTERPRISE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  role          UserRole  @default(STUDENT)
+  tier          UserTier  @default(FREE)
+
+  // Gamificación
+  xp            Int       @default(0)
+  level         Int       @default(1)
+  currentStreak Int       @default(0)
+  longestStreak Int       @default(0)
+  lastActiveAt  DateTime?
+
+  // Perfil de Aprendizaje
+  learningStyle String?   // visual, auditivo, kinestésico, etc.
+  interests     String[]  // Array de intereses
+  goals         String[]  // Array de metas
+
+  // Timestamps
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relaciones
+  accounts      Account[]
+  sessions      Session[]
+  createdOAs    LearningObject[] @relation("CreatedBy")
+  enrollments   Enrollment[]
+  progress      Progress[]
+  achievements  UserAchievement[]
+  questions     Question[]
+  answers       Answer[]
+  comments      Comment[]
+  notes         Note[]
+  educatorProfile EducatorProfile?
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================================
+// PERFIL DE EDUCADOR (Monetización y Analytics)
+// ============================================================================
+
+model EducatorProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  bio               String?  @db.Text
+  expertise         String[] // Áreas de especialidad
+  verified          Boolean  @default(false)
+  verifiedAt        DateTime?
+  tier              String   @default("BRONZE") // BRONZE, SILVER, GOLD
+
+  // Monetización
+  totalEarnings     Decimal  @default(0) @db.Decimal(10, 2)
+  monthlyEarnings   Decimal  @default(0) @db.Decimal(10, 2)
+  totalViews        Int      @default(0)
+  totalCompletions  Int      @default(0)
+
+  // Analytics
+  avgRating         Decimal  @default(0) @db.Decimal(3, 2)
+  totalRatings      Int      @default(0)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("educator_profiles")
+}
+
+// ============================================================================
+// OBJETOS DE APRENDIZAJE (NODOS DEL GRAFO DE CONOCIMIENTO)
+// ============================================================================
+
+enum ContentType {
+  VIDEO
+  ARTICLE
+  SIMULATION
+  GAME
+  PODCAST
+  QUIZ
+  PROJECT
+  LIVE_SESSION
+}
+
+enum DifficultyLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
+enum TeachingStyle {
+  THEORETICAL
+  PRACTICAL
+  ANALOGICAL
+  HISTORICAL
+  VISUAL
+  INTERACTIVE
+}
+
+model LearningObject {
+  id                String          @id @default(cuid())
+  title             String
+  description       String          @db.Text
+  content           String?         @db.Text // Markdown content
+  videoUrl          String?         // YouTube, Vimeo, etc.
+  thumbnailUrl      String?
+  duration          Int?            // Duración en segundos
+
+  // Metadata Enriquecida
+  contentType       ContentType
+  difficultyLevel   DifficultyLevel
+  teachingStyle     TeachingStyle[]
+  language          String          @default("es")
+
+  // Taxonomía
+  subject           String          // Ej: "Matemáticas"
+  topic             String          // Ej: "Álgebra"
+  concepts          String[]        // Ej: ["ecuaciones", "variables"]
+  tags              String[]        // Tags libres
+
+  // Curriculum Alignment
+  curriculum        String?         // Ej: "PE-MINEDU", "AR-NAP"
+  gradeLevel        String?         // Ej: "Secundaria-4"
+
+  // Calidad y Engagement
+  views             Int             @default(0)
+  completions       Int             @default(0)
+  avgCompletionRate Decimal         @default(0) @db.Decimal(5, 2)
+  avgRating         Decimal         @default(0) @db.Decimal(3, 2)
+  totalRatings      Int             @default(0)
+
+  // Estado
+  published         Boolean         @default(false)
+  publishedAt       DateTime?
+
+  // Timestamps
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  // Relaciones
+  creatorId         String
+  creator           User            @relation("CreatedBy", fields: [creatorId], references: [id])
+
+  // Grafo de Conocimiento - Prerrequisitos (Este OA requiere...)
+  prerequisites     KnowledgeEdge[] @relation("RequiresPrerequisite")
+  // Grafo de Conocimiento - Es prerrequisito de (Este OA es requerido por...)
+  isPrerequisiteOf  KnowledgeEdge[] @relation("IsPrerequisite")
+
+  // Relaciones adicionales
+  questions         Question[]
+  enrollments       Enrollment[]
+  progress          Progress[]
+  comments          Comment[]
+  notes             Note[]
+  learningPaths     PathNode[]
+
+  @@index([subject, topic])
+  @@index([difficultyLevel])
+  @@index([published])
+  @@index([creatorId])
+  @@map("learning_objects")
+}
+
+// ============================================================================
+// GRAFO DE CONOCIMIENTO - ARISTAS (Relaciones entre OAs)
+// ============================================================================
+
+enum EdgeType {
+  PREREQUISITE      // A es prerrequisito de B
+  ALTERNATIVE       // A es una explicación alternativa de B
+  DEEPDIVE          // A es una profundización de B
+  PRACTICAL         // A es un caso práctico de B
+  RELATED           // A está relacionado con B
+  NEXT              // A es el siguiente natural después de B
+}
+
+model KnowledgeEdge {
+  id          String   @id @default(cuid())
+
+  // Nodo origen
+  fromId      String
+  fromNode    LearningObject @relation("RequiresPrerequisite", fields: [fromId], references: [id], onDelete: Cascade)
+
+  // Nodo destino
+  toId        String
+  toNode      LearningObject @relation("IsPrerequisite", fields: [toId], references: [id], onDelete: Cascade)
+
+  // Tipo de relación
+  edgeType    EdgeType
+
+  // Peso de la relación (para algoritmos de recomendación)
+  weight      Decimal  @default(1.0) @db.Decimal(3, 2)
+
+  // Metadata
+  createdAt   DateTime @default(now())
+
+  @@unique([fromId, toId, edgeType])
+  @@index([fromId])
+  @@index([toId])
+  @@index([edgeType])
+  @@map("knowledge_edges")
+}
+
+// ============================================================================
+// RUTAS DE APRENDIZAJE (Learning Paths)
+// ============================================================================
+
+model LearningPath {
+  id            String     @id @default(cuid())
+  title         String
+  description   String     @db.Text
+  thumbnailUrl  String?
+
+  // Metadata
+  subject       String
+  topic         String?
+  targetLevel   DifficultyLevel
+  estimatedHours Int?
+
+  // Curriculum
+  curriculum    String?
+  gradeLevel    String?
+
+  // Estado
+  published     Boolean    @default(false)
+  official      Boolean    @default(false) // DiverEdu Originals
+
+  // Stats
+  enrollments   Int        @default(0)
+  completions   Int        @default(0)
+  avgRating     Decimal    @default(0) @db.Decimal(3, 2)
+
+  // Timestamps
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Relaciones
+  nodes         PathNode[]
+  enrolledUsers Enrollment[]
+
+  @@index([subject])
+  @@index([published])
+  @@map("learning_paths")
+}
+
+model PathNode {
+  id              String         @id @default(cuid())
+  pathId          String
+  learningObjectId String
+  order           Int            // Orden en la ruta
+  optional        Boolean        @default(false)
+
+  path            LearningPath   @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  learningObject  LearningObject @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+
+  @@unique([pathId, learningObjectId])
+  @@index([pathId, order])
+  @@map("path_nodes")
+}
+
+// ============================================================================
+// INSCRIPCIONES Y PROGRESO
+// ============================================================================
+
+model Enrollment {
+  id              String         @id @default(cuid())
+  userId          String
+  pathId          String?
+  learningObjectId String?
+
+  startedAt       DateTime       @default(now())
+  completedAt     DateTime?
+  lastAccessedAt  DateTime       @default(now())
+
+  // Progreso
+  progressPercent Decimal        @default(0) @db.Decimal(5, 2)
+  timeSpent       Int            @default(0) // Segundos
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  path            LearningPath?  @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  learningObject  LearningObject? @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pathId])
+  @@unique([userId, learningObjectId])
+  @@index([userId])
+  @@map("enrollments")
+}
+
+model Progress {
+  id                String         @id @default(cuid())
+  userId            String
+  learningObjectId  String
+
+  // Estado
+  started           Boolean        @default(false)
+  completed         Boolean        @default(false)
+  completedAt       DateTime?
+
+  // Métricas
+  timeSpent         Int            @default(0) // Segundos
+  attempts          Int            @default(0)
+  score             Decimal?       @db.Decimal(5, 2) // Puntaje en quizzes
+
+  // Timestamps
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  lastAccessedAt    DateTime       @default(now())
+
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningObject    LearningObject @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, learningObjectId])
+  @@index([userId])
+  @@index([completed])
+  @@map("progress")
+}
+
+// ============================================================================
+// GAMIFICACIÓN
+// ============================================================================
+
+enum AchievementType {
+  STREAK
+  LEVEL
+  COMPLETION
+  MASTERY
+  COLLABORATION
+  CREATION
+  SOCIAL
+}
+
+model Achievement {
+  id          String            @id @default(cuid())
+  name        String
+  description String            @db.Text
+  type        AchievementType
+  iconUrl     String?
+  xpReward    Int               @default(0)
+
+  // Condiciones
+  condition   String            @db.Text // JSON con condiciones
+
+  createdAt   DateTime          @default(now())
+
+  users       UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  achievementId String
+
+  unlockedAt    DateTime    @default(now())
+
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+  @@map("user_achievements")
+}
+
+// ============================================================================
+// BANCO DE PREGUNTAS (Sección TRY)
+// ============================================================================
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  FILL_BLANK
+  DRAG_DROP
+  CONNECT
+  CODE
+  OPEN_ENDED
+}
+
+model Question {
+  id                String         @id @default(cuid())
+  learningObjectId  String
+
+  // Contenido
+  question          String         @db.Text
+  type              QuestionType
+  options           String[]       // Para multiple choice
+  correctAnswer     String         @db.Text // JSON o string
+  explanation       String?        @db.Text
+
+  // Metadata
+  difficulty        DifficultyLevel
+  concepts          String[]       // Conceptos que evalúa
+
+  // Origen
+  createdByUserId   String?        // Puede ser null si es generada por IA
+  isUserGenerated   Boolean        @default(false)
+  verified          Boolean        @default(false)
+
+  // Stats
+  timesAnswered     Int            @default(0)
+  timesCorrect      Int            @default(0)
+  avgTimeToAnswer   Int?           // Segundos
+
+  // Timestamps
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  learningObject    LearningObject @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+  creator           User?          @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  answers           Answer[]
+
+  @@index([learningObjectId])
+  @@index([verified])
+  @@map("questions")
+}
+
+model Answer {
+  id          String    @id @default(cuid())
+  questionId  String
+  userId      String
+
+  // Respuesta
+  answer      String    @db.Text
+  isCorrect   Boolean
+  timeSpent   Int?      // Segundos
+
+  // Timestamps
+  answeredAt  DateTime  @default(now())
+
+  question    Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@index([userId])
+  @@map("answers")
+}
+
+// ============================================================================
+// COMENTARIOS Y COLABORACIÓN
+// ============================================================================
+
+enum CommentType {
+  OPINION
+  QUESTION
+  CONTRIBUTION
+  FEEDBACK
+  CHAT
+  BOOKMARK
+}
+
+model Comment {
+  id                String         @id @default(cuid())
+  learningObjectId  String
+  userId            String
+
+  // Contenido
+  content           String         @db.Text
+  type              CommentType
+  timestamp         Int?           // Timestamp del video (si aplica)
+
+  // Threading
+  parentId          String?
+
+  // Engagement
+  likes             Int            @default(0)
+
+  // Timestamps
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  learningObject    LearningObject @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent            Comment?       @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies           Comment[]      @relation("CommentThread")
+
+  @@index([learningObjectId])
+  @@index([userId])
+  @@index([parentId])
+  @@map("comments")
+}
+
+// ============================================================================
+// APUNTES COLABORATIVOS (Estilo GitHub)
+// ============================================================================
+
+model Note {
+  id                String         @id @default(cuid())
+  learningObjectId  String
+  userId            String
+
+  // Contenido
+  title             String
+  content           String         @db.Text // Markdown
+  format            String         @default("MARKDOWN") // CORNELL, MINDMAP, etc.
+
+  // Colaboración (Fork system)
+  isPublic          Boolean        @default(true)
+  forkedFromId      String?
+  forkCount         Int            @default(0)
+
+  // Engagement
+  likes             Int            @default(0)
+  views             Int            @default(0)
+
+  // Timestamps
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  learningObject    LearningObject @relation(fields: [learningObjectId], references: [id], onDelete: Cascade)
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  forkedFrom        Note?          @relation("NoteFork", fields: [forkedFromId], references: [id])
+  forks             Note[]         @relation("NoteFork")
+
+  @@index([learningObjectId])
+  @@index([userId])
+  @@index([isPublic])
+  @@map("notes")
+}
